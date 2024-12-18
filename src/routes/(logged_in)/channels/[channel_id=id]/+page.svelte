@@ -25,6 +25,7 @@
   let value = '';
   let input: HTMLTextAreaElement;
   let usernames: { [key: string]: number } = {};
+  let channel_names: { [key: string]: number } = {};
   let currentProfile: number | undefined;
   let currentContext: number;
   let authorContext: User | undefined;
@@ -55,6 +56,14 @@
   $: {
     usernames = {};
     users.forEach((u) => (usernames[u.username] = u.id));
+  }
+  $: {
+    channel_names = {};
+    sphere.categories.forEach((cat) => {
+      cat.channels.forEach((chan) => {
+        channel_names[chan.name] = chan.id;
+      });
+    });
   }
   $: messageHistory = channel
     ? ($state.messages[channel.id] ?? { messages: [], hasEveryMessage: false })
@@ -308,7 +317,15 @@
           </div>
         {/if}
       </ul>
-      <MessageInput channel_id={channel?.id} bind:input bind:value bind:usernames {messagesUList} />
+      <MessageInput
+        channel_id={channel?.id}
+        bind:input
+        bind:value
+        bind:usernames
+        bind:channel_names
+        {sphere}
+        {messagesUList}
+      />
     </div>
     {#if !$userConfig.userList}
       <UsersBar
