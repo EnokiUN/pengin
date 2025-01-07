@@ -15,13 +15,13 @@ const state = writable<State>({
   users: [],
   spheres: [],
   categories: [],
-  channels: [],
+  channels: []
 });
 
 let ws: WebSocket | null = null;
 let pingInterval: NodeJS.Timeout | null = null;
 let lastAuthorID: { [name: number]: number } = {};
-let lastAuthorData: { [name: number]: { name: string, avatar: string | number | undefined } } = {};
+let lastAuthorData: { [name: number]: { name: string; avatar: string | number | undefined } } = {};
 let notification: Notification;
 let notification_opt: number;
 let connected = false;
@@ -76,15 +76,13 @@ const connect = async (userData: UserData) => {
             u.members.forEach((m) => {
               state.users[m.user.id] = m.user;
             });
-            // u.channels.forEach((c) => {
-            //   state.channels[c.id] = c;
-            // });
             u.categories.forEach((c) => {
+              c.collapsed = false; // TODO: Maybe remember this between sessions?
               state.categories[c.id] = c;
               c.channels.forEach((c) => {
                 state.channels[c.id] = c;
-              })
-            })
+              });
+            });
             state.spheres[u.id] = u;
           });
           state.users[payload.d.user.id] = payload.d.user;
@@ -140,27 +138,32 @@ const connect = async (userData: UserData) => {
           const authorData = {
             name:
               payload.d._disguise?.name ??
-              payload.d.author.display_name ?? payload.d.author.username,
-            avatar:
-              payload.d._disguise?.avatar ??
-              payload.d.author.avatar
+              payload.d.author.display_name ??
+              payload.d.author.username,
+            avatar: payload.d._disguise?.avatar ?? payload.d.author.avatar
           };
           if (!lastAuthorData[channelID]) {
             let lastMessage = get(state).messages[channelID].messages.at(-1);
             if (lastMessage) {
               lastAuthorData[channelID] = {
-                name: lastMessage?._disguise?.name ??
-                  lastMessage.author.display_name ?? lastMessage.author.username,
+                name:
+                  lastMessage?._disguise?.name ??
+                  lastMessage.author.display_name ??
+                  lastMessage.author.username,
                 avatar: lastMessage?._disguise?.avatar ?? lastMessage?.author.avatar
               };
               lastAuthorID[channelID] = lastMessage?.author.id;
             }
           }
-          let sameData = authorData?.name == lastAuthorData[channelID]?.name && authorData?.avatar == lastAuthorData[channelID].avatar;
+          let sameData =
+            authorData?.name == lastAuthorData[channelID]?.name &&
+            authorData?.avatar == lastAuthorData[channelID].avatar;
           const message = {
             renderedContent: content,
             showAuthor: !sameData || payload.d.author.id != lastAuthorID[channelID],
-            mentioned: new RegExp(`(?<!\\\\)<@${userData.user.id}>`, 'gm').test(payload.d.content ?? ''),
+            mentioned: new RegExp(`(?<!\\\\)<@${userData.user.id}>`, 'gm').test(
+              payload.d.content ?? ''
+            ),
             ...payload.d
           };
           lastAuthorData[channelID] = authorData;
@@ -190,7 +193,7 @@ const connect = async (userData: UserData) => {
                 }
               );
               // new Audio('...').play();
-            };
+            }
           }
           state.update((state) => {
             if (state.messages[message.channel.id]) {

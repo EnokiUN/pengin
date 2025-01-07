@@ -5,4 +5,5 @@ export interface UserConfig {
   userList?: boolean;
   recentEmojis?: string[];
   lastChannel?: number;
+  hiddenCategories?: number[];
 }

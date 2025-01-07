@@ -1,16 +1,19 @@
 <script lang="ts">
   import { slide, type SlideParams } from 'svelte/transition';
+  import { page } from '$app/stores';
   import state from '$lib/ws';
+  import userConfig from '$lib/user_config';
   import userData from '$lib/user_data';
   import type { Sphere } from '$lib/types/sphere';
-  import { page } from '$app/stores';
-  import { SphereChannelType } from '$lib/types/channel';
+  import type { Category } from '$lib/types/category';
+  import { SphereChannelType, type Channel } from '$lib/types/channel';
 
   let currentSphere: Sphere | null = null;
+  let currentChannel: Channel | null = null;
 
   let spheres: Sphere[] = Object.values($state.spheres ?? []);
   $: {
-    let currentChannel = $state.channels[Number.parseInt($page.params.channel_id)];
+    currentChannel = $state.channels[Number.parseInt($page.params.channel_id)];
     if (
       currentChannel &&
       (currentChannel.type == SphereChannelType.TEXT ||
@@ -28,6 +31,21 @@
   const phoneSlide = (node: HTMLElement, params?: SlideParams | undefined) => {
     if (window.screen.width > 1000) return { duration: 0 };
     return slide(node, params);
+  };
+
+  const toggleCategory = (e: Event, c: Category) => {
+    if ((e as ToggleEvent).newState == 'closed') {
+      if ($userConfig.hiddenCategories) {
+        $userConfig.hiddenCategories?.push(c.id);
+      } else {
+        $userConfig.hiddenCategories = [c.id];
+      }
+    } else {
+      let index = $userConfig.hiddenCategories?.indexOf(c.id) ?? -1;
+      if (index >= 0) $userConfig.hiddenCategories!.splice(index, 1);
+    }
+
+    $userConfig = $userConfig;
   };
 </script>
 
@@ -60,17 +78,32 @@
       <h3 id="sphere-name">{currentSphere.name ?? currentSphere.slug}</h3>
       <hr />
       <ul id="sphere-channel-list">
-        {#each currentSphere.categories as category (category.id)}
-          {#if category.id != currentSphere.id}
-            <h4 class="category">
-              > {category.name}
-            </h4>
-          {/if}
-          {#each category.channels as channel (channel.id)}
-            <a href="/channels/{channel.id}" class="channel">
-              # {channel.name}
-            </a>
-          {/each}
+        {#each currentSphere.categories[0].channels as channel (channel.id)}
+          <a
+            href="/channels/{channel.id}"
+            class={`channel${channel == currentChannel ? ' current' : ''}`}
+          >
+            # {channel.name}
+          </a>
+        {/each}
+        {#each currentSphere.categories.slice(1) as category (category.id)}
+          <details
+            class="category"
+            open={!$userConfig.hiddenCategories?.includes(category.id)}
+            on:toggle={(e) => toggleCategory(e, category)}
+          >
+            <summary class="category-name">{category.name}</summary>
+            {#if !category.collapsed}
+              {#each category.channels as channel (channel.id)}
+                <a
+                  href="/channels/{channel.id}"
+                  class={`channel${channel == currentChannel ? ' current' : ''}`}
+                >
+                  # {channel.name}
+                </a>
+              {/each}
+            {/if}
+          </details>
         {/each}
       </ul>
     </div>
@@ -135,11 +168,41 @@
 
   .category {
     margin: 10px 0;
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .category summary {
+    margin: 0;
+  }
+
+  .category-name {
+    color: var(--color-text);
+    cursor: pointer;
+    padding: 5px;
+    border-radius: 5px;
+  }
+
+  .category-name:hover {
+    background-color: var(--purple-300);
   }
 
   .channel {
-    padding-left: 5px;
+    padding: 5px;
+    margin: 2px;
+    border-radius: 5px;
     text-decoration: none;
+  }
+
+  .channel:hover {
+    color: var(--gray-600);
+    background-color: var(--purple-300);
+  }
+
+  .channel.current {
+    color: var(--gray-600);
+    background-color: var(--purple-400);
   }
 
   #sphere-banner {
