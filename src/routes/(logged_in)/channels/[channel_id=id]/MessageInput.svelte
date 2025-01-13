@@ -1,78 +1,204 @@
 <script lang="ts">
   import { afterUpdate, onMount, tick } from 'svelte';
+  import state from '$lib/ws';
   import Markdown from '$lib/components/Markdown.svelte';
   import userData from '$lib/user_data';
   import userConfig from '$lib/user_config';
   import { request } from '$lib/request';
   import { emojiDictionary, toUrl, EMOJI_REGEX } from '$lib/emoji';
+  import type { Sphere } from '$lib/types/sphere';
+  import { SphereChannelType } from '$lib/types/channel';
 
   export let channel_id: number;
+  export let sphere: Sphere;
   export let value = '';
   export let input: HTMLTextAreaElement;
   export let messagesUList: HTMLElement;
   export let usernames: { [key: string]: number };
+  export let channel_names: { [key: string]: number };
   let mobile = false;
   let previewMessage = false;
 
-  let emojiPreview: HTMLDivElement;
-  let currentEmoji: HTMLButtonElement | undefined;
-  let currentEmojiIndex: number | undefined;
-  let emojiMatch: string = '';
-  let suggestedEmoji: { name: string; display: string }[] = new Array();
-  const maxEmoji = 10;
-
-  const getMatchingEmoji = async (searchString: string) => {
-    let matches = searchString.match(/:([a-zA-Z0-9_-]{2,})$/);
-
-    if (matches) {
-      if (emojiMatch != matches[1]) {
-        suggestedEmoji.length = 0;
-
-        emojiMatch = matches[1];
-        let emojiRegex = new RegExp(`^${emojiMatch}`, 'i');
-
-        for (let i = 0; i < ($userConfig.recentEmojis?.length ?? 0); i++) {
-          let emoji = $userConfig.recentEmojis![i];
-          if (emojiRegex.test(emoji)) {
-            suggestedEmoji.push({ name: emoji, display: toUrl(emoji) });
-          }
-        }
-        for (let emojiName of Object.keys(emojiDictionary)) {
-          if (suggestedEmoji.find((e) => e.name == emojiName)) continue;
-          if (suggestedEmoji.length >= maxEmoji) break;
-          if (emojiRegex.test(emojiName)) {
-            suggestedEmoji.push({ name: emojiName, display: toUrl(emojiName) });
-          }
-        }
-
-        await tick();
-        currentEmoji = emojiPreview?.firstElementChild! as HTMLButtonElement;
-        currentEmojiIndex = 0;
-      }
-    } else {
-      suggestedEmoji.length = 0;
-      emojiMatch = '';
-      currentEmoji = undefined;
-    }
+  type AutocompleteItem = {
+    name: string;
+    value: string;
+    image: string | null;
   };
 
-  const onSubmit = async () => {
-    if (value.trim()) {
-      let headers = new Headers();
-      headers.set('Authorization', $userData!.session.token);
-      if (value.startsWith('/shrug')) value = value.substring(7) + ' ¯\\\\\\_(ツ)_/¯';
-      value = value.replace(/@([a-z0-9_-]+)/gm, (m, username) => {
+  let activeAutocompleter: Autocompleter | null = null;
+  let autocompleteWindow: HTMLDivElement | null = null;
+  const MAX_SUGGESTIONS = 10;
+
+  class Autocompleter {
+    matcher: RegExp;
+    delimiter: string;
+    options: {
+      name: string;
+      value: string;
+      image: string | null;
+    }[];
+    html_class: string;
+    selectedIndex: number | null = null;
+    selectedElement: HTMLButtonElement | null = null;
+    optionProvider: (optionMatcher: RegExp) => AutocompleteItem[];
+
+    constructor(
+      matcher: RegExp,
+      delimiter: string,
+      html_class: string,
+      optionProvider: (optionMatcher: RegExp) => AutocompleteItem[]
+    ) {
+      this.matcher = matcher;
+      this.delimiter = delimiter;
+      this.options = new Array();
+      this.html_class = html_class;
+      this.optionProvider = optionProvider;
+    }
+
+    async autocomplete(input: string): Promise<boolean> {
+      let matches = input.match(this.matcher);
+
+      if (matches) {
+        activeAutocompleter = this;
+        this.options = this.optionProvider(new RegExp(`^${matches[1]}`, 'i'));
+        if (this.options.length > 0) {
+          await tick(); // Wait for activeAutocompleter window to pop up.
+
+          this.selectedIndex = 0;
+          this.selectedElement = autocompleteWindow?.firstElementChild as HTMLButtonElement | null;
+          return true;
+        }
+      }
+
+      activeAutocompleter = null;
+      return false;
+    }
+  }
+
+  const emojiAutocompleter = new Autocompleter(
+    /(?<=:)([a-zA-Z0-9_-]{2,})$/,
+    ':',
+    'emoji-autocomplete',
+    (optionMatcher: RegExp) => {
+      let options: AutocompleteItem[] = new Array();
+
+      $userConfig.recentEmojis?.forEach((emoji) => {
+        if (optionMatcher.test(emoji)) {
+          options.push({
+            name: emoji,
+            value: emoji,
+            image: toUrl(emoji)
+          });
+        }
+      });
+
+      for (let emojiName of Object.keys(emojiDictionary)) {
+        if (options.find((e) => e.name == emojiName)) continue;
+
+        if (optionMatcher.test(emojiName)) {
+          options.push({
+            name: emojiName,
+            value: emojiName,
+            image: toUrl(emojiName)
+          });
+        }
+
+        if (options.length >= MAX_SUGGESTIONS) break;
+      }
+
+      return options;
+    }
+  );
+
+  const memberAutocompleter = new Autocompleter(
+    /(?<=@)([a-zA-Z0-9_-]*)$/,
+    ' ',
+    'member-autocomplete',
+    (optionMatcher: RegExp) => {
+      let options: AutocompleteItem[] = new Array();
+
+      for (let member of sphere.members) {
+        if (
+          (member.nickname && optionMatcher.test(member.nickname)) ||
+          (member.user.display_name && optionMatcher.test(member.user.display_name)) ||
+          (member && optionMatcher.test(member.user.username))
+        ) {
+          options.push({
+            name: `@${member.nickname ?? member.user.display_name ?? member.user.username}`,
+            value: member.user.username,
+            image: member.user.avatar
+              ? `${$userData?.instanceInfo.effis_url}/avatars/${member.user.avatar}`
+              : 'https://github.com/eludris/.github/blob/main/assets/thang-big.png?raw=true'
+          });
+
+          if (options.length >= MAX_SUGGESTIONS) break;
+        }
+      }
+
+      return options;
+    }
+  );
+
+  const channelAutocompleter = new Autocompleter(
+    /(?<=#)([a-zA-Z0-9_-]*)$/,
+    ' ',
+    'channel-autocomplete',
+    (optionMatcher: RegExp) => {
+      let options: AutocompleteItem[] = new Array();
+
+      for (let category of sphere.categories) {
+        for (let channel of category.channels) {
+          if (optionMatcher.test(channel.name)) {
+            options.push({
+              name: `#${channel.name}`,
+              value: channel.name,
+              image: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0Ij48cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Im01LjQxIDIxbC43MS00aC00bC4zNS0yaDRsMS4wNi02aC00bC4zNS0yaDRsLjcxLTRoMmwtLjcxIDRoNmwuNzEtNGgybC0uNzEgNGg0bC0uMzUgMmgtNGwtMS4wNiA2aDRsLS4zNSAyaC00bC0uNzEgNGgtMmwuNzEtNGgtNmwtLjcxIDR6TTkuNTMgOWwtMS4wNiA2aDZsMS4wNi02eiIvPjwvc3ZnPg=='
+            });
+
+            if (options.length >= MAX_SUGGESTIONS) return options;
+          }
+        }
+      }
+
+      return options;
+    }
+  );
+
+  const preprocess = (message: string): string => {
+    if (message.startsWith('/shrug')) {
+      message = message.substring(7) + ' ¯\\\\\\_(ツ)_/¯';
+    }
+
+    return message
+      .replace(/@([a-z0-9_-]+)/gm, (m, username) => {
         let id = usernames[username];
         if (id != undefined) {
           return `<@${id}>`;
         } else {
           return m;
         }
+      })
+      .replace(/#([a-z0-9_-]+)/gm, (m, channel) => {
+        let id = channel_names[channel];
+        if (id != undefined) {
+          return `<#${id}>`;
+        } else {
+          return m;
+        }
       });
+  };
+
+  const onSubmit = async () => {
+    if (value.trim()) {
+      value = preprocess(value);
+
+      let headers = new Headers();
+      headers.set('Authorization', $userData!.session.token);
       request('POST', `/channels/${channel_id}/messages`, { content: value }).then((_) =>
         messagesUList.scroll(0, messagesUList.scrollHeight)
       );
     }
+
     let usedEmojis = value.match(EMOJI_REGEX)?.map((m) => m.slice(1, -1)) ?? [];
     if ($userConfig.recentEmojis) {
       for (let i = 0; i < usedEmojis.length; i++) {
@@ -84,9 +210,10 @@
     } else {
       $userConfig.recentEmojis = usedEmojis;
     }
+
     value = '';
     previewMessage = false;
-    currentEmoji = undefined;
+    activeAutocompleter = null;
     await tick();
     input?.focus(); // for mobiles
   };
@@ -178,7 +305,7 @@
       await tick();
       input.selectionStart = input.selectionEnd = start + 1;
     }
-    if ((e.key == 'ArrowDown' || e.key == 'ArrowUp') && currentEmoji) {
+    if ((e.key == 'ArrowDown' || e.key == 'ArrowUp') && activeAutocompleter) {
       e.preventDefault();
     }
   };
@@ -198,28 +325,32 @@
       await tick();
       input?.focus();
     }
-    if ((e.key == 'Tab' || e.key == 'Enter') && currentEmoji) {
+    if ((e.key == 'Tab' || e.key == 'Enter') && activeAutocompleter) {
       e.preventDefault();
-      currentEmoji.click();
+      activeAutocompleter.selectedElement?.click();
       await tick();
       input?.focus();
     }
-    if (e.key == 'ArrowDown' && currentEmoji) {
-      if (currentEmoji.nextElementSibling) {
-        currentEmojiIndex!++;
-        currentEmoji = currentEmoji.nextElementSibling as HTMLButtonElement;
+    if (e.key == 'ArrowDown' && activeAutocompleter) {
+      if (activeAutocompleter.selectedElement?.nextElementSibling) {
+        activeAutocompleter.selectedIndex!++;
+        activeAutocompleter.selectedElement = activeAutocompleter.selectedElement
+          .nextElementSibling as HTMLButtonElement | null;
       } else {
-        currentEmojiIndex = 0;
-        currentEmoji = emojiPreview.firstElementChild as HTMLButtonElement;
+        activeAutocompleter.selectedIndex = 0;
+        activeAutocompleter.selectedElement =
+          autocompleteWindow?.firstElementChild as HTMLButtonElement | null;
       }
     }
-    if (e.key == 'ArrowUp' && currentEmoji) {
-      if (currentEmoji.previousElementSibling) {
-        currentEmojiIndex!--;
-        currentEmoji = currentEmoji.previousElementSibling as HTMLButtonElement;
+    if (e.key == 'ArrowUp' && activeAutocompleter) {
+      if (activeAutocompleter.selectedElement?.previousElementSibling) {
+        activeAutocompleter.selectedIndex!--;
+        activeAutocompleter.selectedElement = activeAutocompleter.selectedElement
+          .previousElementSibling as HTMLButtonElement | null;
       } else {
-        currentEmojiIndex = suggestedEmoji.length - 1;
-        currentEmoji = emojiPreview.lastElementChild as HTMLButtonElement;
+        activeAutocompleter.selectedIndex = activeAutocompleter.options.length - 1;
+        activeAutocompleter.selectedElement =
+          autocompleteWindow?.lastElementChild as HTMLButtonElement | null;
       }
     }
   };
@@ -237,33 +368,46 @@
   };
 
   const onSelectionChange = async () => {
-    await getMatchingEmoji(value.slice(0, input.selectionStart));
+    if (await emojiAutocompleter.autocomplete(value.slice(0, input.selectionStart))) {
+      return;
+    }
+    if (await memberAutocompleter.autocomplete(value.slice(0, input.selectionStart))) {
+      return;
+    }
+    if (await channelAutocompleter.autocomplete(value.slice(0, input.selectionStart))) {
+      return;
+    }
   };
 
-  const autocompleteEmoji = async (emojiName: string) => {
-    let cursorPos = input.selectionStart;
+  const autocomplete = async (itemName: string) => {
+    if (activeAutocompleter === null) return;
 
-    let emojiPart = value.slice(0, cursorPos).replace(/(?<=\:)[a-zA-Z0-9_-]{2,}$/, `${emojiName}:`);
+    let cursorPos = input.selectionStart;
+    let previewPart = value
+      .slice(0, cursorPos)
+      .replace(activeAutocompleter.matcher, `${itemName}${activeAutocompleter.delimiter}`);
     let remainder = value.slice(cursorPos);
+
     if (remainder && !/^\s+/.test(remainder)) {
-      value = emojiPart + ' ' + remainder;
+      value = previewPart + ' ' + remainder;
     } else {
-      value = emojiPart + remainder;
+      value = previewPart + remainder;
     }
 
-    currentEmoji = undefined;
-    suggestedEmoji.length = 0;
-    emojiMatch = '';
-    await tick();
-    input.selectionStart = input.selectionEnd = emojiPart.length;
-    input?.focus();
+    activeAutocompleter = null;
+    await tick(); // Wait for autocomplete window to disappear and input to update.
+
+    input.selectionStart = input.selectionEnd = previewPart.length;
+    input.focus();
   };
 
   const previewEntryHover = (i: number) => {
-    currentEmoji?.classList.remove('highlight');
-    currentEmoji = emojiPreview.children[i] as HTMLButtonElement;
-    currentEmoji.classList.add('highlight');
-    currentEmojiIndex = i;
+    if (activeAutocompleter === null) return;
+
+    activeAutocompleter.selectedElement?.classList.remove('highlight');
+    activeAutocompleter.selectedElement = autocompleteWindow?.children[i] as HTMLButtonElement;
+    activeAutocompleter.selectedElement.classList.add('highlight');
+    activeAutocompleter.selectedIndex = i;
   };
 </script>
 
@@ -272,7 +416,7 @@
 <form id="message-input-form" on:submit|preventDefault={onSubmit}>
   {#if previewMessage}
     <span id="markdown-wrapper">
-      <Markdown content={value} />
+      <Markdown content={preprocess(value)} />
     </span>
   {:else}
     <textarea
@@ -309,20 +453,22 @@
       ><path fill="currentColor" d="m2 21l21-9L2 3v7l15 2l-15 2v7Z" /></svg
     >
   </button>
-  {#if suggestedEmoji.length > 0}
-    <div id="emoji-preview" bind:this={emojiPreview}>
-      {#each suggestedEmoji as emoji, i}
+  {#if activeAutocompleter?.options.length && activeAutocompleter?.options.length > 0}
+    <div class="autocomplete-window" bind:this={autocompleteWindow}>
+      {#each activeAutocompleter.options as item, i}
         <button
-          class={`${currentEmojiIndex == i ? 'highlight' : ''}`}
-          id="emoji-preview-entry"
+          class={`autocomplete-entry${activeAutocompleter?.selectedIndex == i ? ' highlight' : ''}`}
           type="button"
-          on:click={() => autocompleteEmoji(emoji.name)}
+          on:click={() => autocomplete(item.value)}
           on:mouseenter={() => previewEntryHover(i)}
         >
-          <img id="emoji-preview-display" src={emoji.display} alt={emoji.name} />
-          <div id="emoji-preview-name">{emoji.name}</div>
-          <div id="emoji-preview-spacer" />
-          <div id="emoji-preview-sphere" />
+          <img
+            class="autocomplete-image {activeAutocompleter.html_class}"
+            src={item.image}
+            alt={item.name}
+          />
+          <div class="autocomplete-name {activeAutocompleter.html_class}">{item.name}</div>
+          <div class="autocomplete-spacer {activeAutocompleter.html_class}" />
         </button>
       {/each}
     </div>
@@ -393,7 +539,7 @@
     display: inline-block;
   }
 
-  #emoji-preview {
+  .autocomplete-window {
     position: absolute;
     display: flex;
     flex-direction: column;
@@ -412,7 +558,7 @@
     box-sizing: border-box;
   }
 
-  #emoji-preview-entry {
+  .autocomplete-entry {
     color: var(--gray-600);
     display: flex;
     flex-direction: row;
@@ -422,27 +568,31 @@
     border: none;
   }
 
-  #emoji-preview-entry.highlight,
-  #emoji-preview-entry.highlight {
+  .autocomplete-entry.highlight {
     background-color: var(--purple-400);
     border-radius: 5px;
   }
 
-  #emoji-preview-display {
+  .autocomplete-image {
     display: flex;
     flex-direction: row;
     width: 30px;
     object-fit: contain;
-    padding-right: 1em;
+    margin-right: 1em;
   }
 
-  #emoji-preview-name {
+  .autocomplete-image.member-autocomplete {
+    border-radius: 100%;
+  }
+
+  .autocomplete-name {
     display: flex;
     align-items: center;
     font-size: 14px;
+    white-space: nowrap;
   }
 
-  #emoji-preview-spacer {
+  .autocomplete-spacer {
     flex-grow: 1;
     width: 100%;
   }

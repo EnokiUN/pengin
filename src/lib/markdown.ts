@@ -9,6 +9,7 @@ import rehypeStringify from 'rehype-stringify';
 
 import { visit } from 'unist-util-visit';
 import data from '$lib/user_data';
+import type { SphereChannel } from './types/channel';
 import state from './ws';
 import { get } from 'svelte/store';
 import { emojiDictionary, EMOJI_REGEX, toUrl } from './emoji';
@@ -51,25 +52,29 @@ const remarkKillImages: Plugin = () => {
 
 const rehypeExternalAnchors: Plugin = () => {
   return (tree) =>
-    visit(tree, 'element', (node: { tagName: string; properties: { target: string, href: string } }) => {
-      if (node.tagName == 'a') {
-        try {
-          const url = new URL(node.properties.href);
-          if (url.hostname == 'tenor.com' || url.hostname == 'media1.tenor.com') {
-            const gif = node as any; //typing hack for my sanity
-            gif.tagName = 'img';
-            gif.properties.src = node.properties.href;
-            if (!gif.properties.src.endsWith('.gif')) {
-              gif.properties.src += '.gif';
+    visit(
+      tree,
+      'element',
+      (node: { tagName: string; properties: { target: string; href: string } }) => {
+        if (node.tagName == 'a') {
+          try {
+            const url = new URL(node.properties.href);
+            if (url.hostname == 'tenor.com' || url.hostname == 'media1.tenor.com') {
+              const gif = node as any; //typing hack for my sanity
+              gif.tagName = 'img';
+              gif.properties.src = node.properties.href;
+              if (!gif.properties.src.endsWith('.gif')) {
+                gif.properties.src += '.gif';
+              }
+              gif.properties.href = undefined;
+              gif.children = [];
+              return;
             }
-            gif.properties.href = undefined;
-            gif.children = [];
-            return;
-          }
-        } catch { }
-        node.properties.target = '_blank';
+          } catch {}
+          node.properties.target = '_blank';
+        }
       }
-    });
+    );
 };
 
 const unScrewHtml = (html: string): string => {
@@ -191,7 +196,17 @@ export default async (content: string): Promise<string> => {
       return res.replace(/(?<!\\)&#x3C;@(\d+)>/gm, (m, id, offset) => {
         let user = get(state).users[id];
         if (user && res.substring(0, offset).split(/<\\?code>/gm).length % 2 == 1) {
-          return `<span class="mention">@${user.display_name ?? user.username}</span>`;
+          return `<span class="mention user-mention">@${user.display_name ?? user.username}</span>`;
+        }
+        return m;
+      });
+    })
+    .then((res) => {
+      // Parse channel mentions (<#id>)
+      return res.replace(/(?<!\\)&#x3C;#(\d+)>/gm, (m, id, offset) => {
+        let channel = get(state).channels[id];
+        if (channel && res.substring(0, offset).split(/<\\?code>/gm).length % 2 == 1) {
+          return `<span class="mention channel-mention">#${channel.hasOwnProperty('name') ? (channel as SphereChannel).name : 'Unknown Channel'}</span>`;
         }
         return m;
       });
